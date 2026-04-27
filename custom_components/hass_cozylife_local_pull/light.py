@@ -43,9 +43,9 @@ async def async_setup_platform(
     if lights:
         async_add_entities(lights)
 
+
 class CozyLifeLightOptimized(LightEntity):
     """Optimized representation of a CozyLife Light for high-frequency control."""
-    # --- OPTIMALIZACE: Vypnutí pravidelného dotazování (polling) ---
     _attr_should_poll = False
     
     _attr_min_color_temp_kelvin = 2000
@@ -68,15 +68,40 @@ class CozyLifeLightOptimized(LightEntity):
         if not self._attr_supported_color_modes:
             self._attr_supported_color_modes.add(ColorMode.ONOFF)
 
-        # Předpokládáme, že žárovka je na začátku zapnutá v režimu bílé
-        self._attr_is_on = True
+        # Set safe default states. Do NOT query the socket here to avoid blocking the HA event loop.
+        self._attr_is_on = False
         self._attr_brightness = 255
-        self._attr_hs_color = None
-        self._attr_color_temp_kelvin = 3500
-        self._attr_color_mode = ColorMode.COLOR_TEMP
-        self._attr_available = True
+        self._attr_available = False 
+        
+        # Dynamically set initial color mode based on supported features
+        if ColorMode.COLOR_TEMP in self._attr_supported_color_modes:
+            self._attr_color_mode = ColorMode.COLOR_TEMP
+        elif ColorMode.HS in self._attr_supported_color_modes:
+            self._attr_color_mode = ColorMode.HS
+        elif ColorMode.BRIGHTNESS in self._attr_supported_color_modes:
+            self._attr_color_mode = ColorMode.BRIGHTNESS
+        else:
+            self._attr_color_mode = ColorMode.ONOFF
 
-    # Metoda async_update je záměrně odstraněna, protože polling je vypnutý.
+        self._attr_hs_color = (0.0, 100.0) if self._attr_color_mode == ColorMode.HS else None
+        self._attr_color_temp_kelvin = 3500 if self._attr_color_mode == ColorMode.COLOR_TEMP else None
+
+    async def async_added_to_hass(self) -> None:
+        """Run when entity is about to be added to hass. Fetch initial state safely."""
+        # Query initial state in a background executor thread
+        initial_state = await self.hass.async_add_executor_job(self._tcp_client.query)
+        
+        if initial_state and '1' in initial_state:
+            self._attr_is_on = initial_state['1'] != 0
+            self._attr_available = True
+            
+            # Sync brightness if available (scale 0-1000 to 0-255)
+            if '4' in initial_state:
+                self._attr_brightness = round(initial_state['4'] * 255 / 1000)
+        else:
+            self._attr_available = False 
+            
+        self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Instruct the light to turn on with optimistic updates."""
@@ -105,10 +130,10 @@ class CozyLifeLightOptimized(LightEntity):
             normalized_val = (target_color_temp_kelvin - self._attr_min_color_temp_kelvin) / kelvin_range
             payload['3'] = round(max(0, min(1000, normalized_val * 1000)))
         
-        # Odeslání příkazu bez čekání na odpověď
+        # Send command without waiting for a response
         await self.hass.async_add_executor_job(self._tcp_client.control, payload)
         
-        # Okamžitá ("optimistická") aktualizace stavu v Home Assistant
+        # Immediate ("optimistic") state update in Home Assistant
         self._attr_is_on = True
         if target_brightness_ha is not None:
             self._attr_brightness = target_brightness_ha

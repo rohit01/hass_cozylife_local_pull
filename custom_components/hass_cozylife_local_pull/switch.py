@@ -33,13 +33,11 @@ def setup_platform(
 ) -> None:
     """Set up the sensor platform."""
     # We only want this platform to be set up via discovery.
-    # logging.info('setup_platform', hass, config, add_entities, discovery_info)
     _LOGGER.info('setup_platform')
     _LOGGER.info(f'ip={hass.data[DOMAIN]}')
     
     if discovery_info is None:
         return
-
 
     switchs = []
     for item in hass.data[DOMAIN]['tcp_client']:
@@ -51,7 +49,7 @@ def setup_platform(
 
 class CozyLifeSwitch(SwitchEntity):
     _tcp_client = None
-    _attr_is_on = True
+    _attr_is_on = False
     
     def __init__(self, tcp_client) -> None:
         """Initialize the sensor."""
@@ -59,11 +57,17 @@ class CozyLifeSwitch(SwitchEntity):
         self._tcp_client = tcp_client
         self._unique_id = tcp_client.device_id
         self._name = tcp_client.device_model_name + ' ' + tcp_client.device_id[-4:]
-        self._refresh_state()
+        self.update() # Get initial state
     
-    def _refresh_state(self):
+    def update(self):
+        """Fetch new state data for this switch (called safely by HA)."""
         self._state = self._tcp_client.query()
-        self._attr_is_on = 0 != self._state['1']
+        if self._state and '1' in self._state:
+            self._attr_is_on = 0 != self._state['1']
+            self._attr_available = True
+        else:
+            # Device is likely offline or returned empty data
+            self._attr_available = False
     
     @property
     def name(self) -> str:
@@ -72,14 +76,12 @@ class CozyLifeSwitch(SwitchEntity):
     @property
     def available(self) -> bool:
         """Return if the device is available."""
-        return True
+        return getattr(self, '_attr_available', True)
     
     @property
     def is_on(self) -> bool:
         """Return True if entity is on."""
-        self._attr_is_on = True
-
-        self._refresh_state()
+        # NO NETWORK I/O HERE. Just return the cached variable.
         return self._attr_is_on
     
     @property
@@ -92,14 +94,11 @@ class CozyLifeSwitch(SwitchEntity):
         self._attr_is_on = True
         _LOGGER.info(f'turn_on:{kwargs}')
         self._tcp_client.control({'1': 255})
-        return None
-        raise NotImplementedError()
+        self.schedule_update_ha_state()
     
     def turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
         self._attr_is_on = False
         _LOGGER.info('turn_off')
         self._tcp_client.control({'1': 0})
-        return None
-        
-        raise NotImplementedError()
+        self.schedule_update_ha_state()
